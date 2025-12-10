@@ -1,14 +1,20 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, Paperclip, Loader2, Download } from 'lucide-react';
-import { Message, AgentType, LoanDetails } from './types';
+import { Send, Paperclip, Loader2, Download, AlertCircle } from 'lucide-react';
+import { Message, AgentType, LoanDetails, AgentStatus } from './types';
 import ChatBubble from './components/ChatBubble';
 import StatusPanel from './components/StatusPanel';
 import { sendMessageToGemini } from './services/geminiService';
 import { generateSanctionLetter } from './utils/pdfGenerator';
 
-// Default initial state
 const INITIAL_LOAN_DETAILS: LoanDetails = {
   status: 'initial'
+};
+
+const AGENT_GREETINGS: Record<AgentType, string> = {
+  [AgentType.SALES]: "Hello! How can I help you with a loan today?",
+  [AgentType.KYC]: "Hello! I am the KYC Agent. To verify your identity, please upload a clear photo of your Identity Proof (Passport, Driver's License, or National ID).",
+  [AgentType.UNDERWRITING]: "Hello! I am the Underwriting Agent. I need to assess your financial eligibility. Please upload your latest Salary Slip or Bank Statement.",
+  [AgentType.SANCTION]: "Processing your final decision details...",
 };
 
 const App: React.FC = () => {
@@ -24,8 +30,9 @@ const App: React.FC = () => {
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [activeAgent, setActiveAgent] = useState<AgentType>(AgentType.SALES);
+  const [agentStatusMsg, setAgentStatusMsg] = useState<string>("Discussing loan requirements");
   const [loanDetails, setLoanDetails] = useState<LoanDetails>(INITIAL_LOAN_DETAILS);
-  const [uploadRequest, setUploadRequest] = useState<string | null>(null); // 'identity_proof' | 'income_proof' | null
+  const [uploadRequest, setUploadRequest] = useState<string | null>(null);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -38,7 +45,7 @@ const App: React.FC = () => {
     scrollToBottom();
   }, [messages]);
 
-  const handleSendMessage = async (text: string, attachment?: { url: string, base64: string, type: 'image' }) => {
+  const handleSendMessage = async (text: string, attachment?: { url: string, base64: string, type: 'image', mimeType: string }) => {
     if ((!text.trim() && !attachment) || isLoading) return;
 
     // 1. Add User Message
@@ -53,72 +60,110 @@ const App: React.FC = () => {
     const newHistory = [...messages, userMsg];
     setMessages(newHistory);
     setInputValue('');
-    setUploadRequest(null); // Clear upload request if fulfilled
+    setUploadRequest(null);
     setIsLoading(true);
 
     try {
-      // 2. Call Gemini
-      const apiKey = process.env.API_KEY || ''; // Injected by environment
-      if (!apiKey) {
-        throw new Error("API Key missing");
-      }
+      const apiKey = process.env.API_KEY || ''; 
+      if (!apiKey) throw new Error("API Key missing");
 
-      const response = await sendMessageToGemini(newHistory, apiKey);
+      // Pass current context to service
+      const response = await sendMessageToGemini(newHistory, apiKey, activeAgent, loanDetails);
 
-      // 3. Handle Function Calls (State Updates)
+      let nextAgent = activeAgent;
+      let nextStatusMsg = agentStatusMsg;
+      let nextLoanDetails = { ...loanDetails };
+      let toolTriggered = false;
+
+      // 3. Handle Function Calls
       if (response.functionCalls) {
+        toolTriggered = true;
         for (const call of response.functionCalls) {
           console.log("Processing Tool:", call.name, call.args);
           
           if (call.name === 'updateLoanStage') {
-            const { agent, stage } = call.args;
-            setActiveAgent(agent as AgentType);
-            setLoanDetails(prev => ({ ...prev, status: stage === 'decision' ? 'underwriting' : stage })); // map simplified stages
+            const { agent, stage, statusMessage } = call.args;
+            nextAgent = agent as AgentType;
+            nextLoanDetails.status = stage === 'decision' ? 'underwriting' : stage;
+            nextStatusMsg = statusMessage || "Processing handover...";
           } 
           else if (call.name === 'requestDocument') {
             const { docType } = call.args;
             setUploadRequest(docType);
+            nextStatusMsg = `Waiting for ${docType.replace('_', ' ')} upload`;
           }
           else if (call.name === 'approveLoan') {
-            const { approvedAmount, interestRate, tenureMonths, applicantName } = call.args;
-            setLoanDetails(prev => ({
-              ...prev,
+            const { approvedAmount, interestRate, tenureMonths, applicantName, evidence } = call.args;
+            nextLoanDetails = {
+              ...nextLoanDetails,
               status: 'approved',
               loanAmount: approvedAmount,
               interestRate,
               tenureMonths,
-              applicantName
-            }));
-            setActiveAgent(AgentType.SANCTION);
+              applicantName,
+              decisionReason: "Meets financial criteria",
+              decisionEvidence: evidence
+            };
+            nextAgent = AgentType.SANCTION;
+            nextStatusMsg = "Finalizing Sanction Letter";
           }
           else if (call.name === 'rejectLoan') {
-            setLoanDetails(prev => ({ ...prev, status: 'rejected' }));
-            setActiveAgent(AgentType.SANCTION);
+            const { reason, evidence } = call.args;
+            nextLoanDetails = {
+              ...nextLoanDetails,
+              status: 'rejected',
+              decisionReason: reason,
+              decisionEvidence: evidence
+            };
+            nextAgent = AgentType.SANCTION;
+            nextStatusMsg = "Application Closed";
           }
         }
       }
 
-      // 4. Add Model Response
-      const modelMsg: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'model',
-        content: response.text,
-        timestamp: new Date(),
-        sender: activeAgent // Note: activeAgent might have changed in the function call processing, strictly speaking we should use the *new* agent, but for UX flow, using the one that generated the text or the new one is fine. React state updates are batched, so this uses the *previous* state value unless we use refs. For simplicity, we assume the text comes from the agent active *at start* or *end* of turn. Let's use the activeAgent state (which updates next render) so actually we might want to capture the function call agent update for the *next* message label. For now, using current state.
-      };
+      // Batch state updates
+      setActiveAgent(nextAgent);
+      setAgentStatusMsg(nextStatusMsg);
+      setLoanDetails(nextLoanDetails);
 
-      // Fix for "sender" label lagging behind state update:
-      // If a function call changed the agent, the text usually introduces the NEW agent.
-      // We will rely on the text response.
+      // 4. Add Model Response
+      // If the model called a tool but gave no text (or very little), we generate a context-aware fallback
+      let finalText = response.text;
       
-      setMessages(prev => [...prev, modelMsg]);
+      if (toolTriggered && (!finalText || finalText.length < 10)) {
+         // If we switched agents, use the standard greeting
+         if (nextAgent !== activeAgent) {
+           finalText = AGENT_GREETINGS[nextAgent];
+         } 
+         // If we stayed on same agent but requested a doc
+         else if (uploadRequest) {
+           finalText = `Please upload your ${uploadRequest.replace('_', ' ')}.`;
+         }
+      }
+
+      // Fallback if still empty (though unlikely with above logic)
+      if (!finalText && toolTriggered) {
+         finalText = "I have updated the application details. Please continue.";
+      }
+
+      if (finalText) {
+        const modelMsg: Message = {
+          id: (Date.now() + 1).toString(),
+          role: 'model',
+          content: finalText,
+          timestamp: new Date(),
+          // Visual tweak: if we just switched, attribute this message to the NEW agent
+          sender: nextAgent 
+        };
+        setMessages(prev => [...prev, modelMsg]);
+      }
 
     } catch (error) {
       console.error(error);
       const errorMsg: Message = {
         id: Date.now().toString(),
         role: 'system',
-        content: "System Error: Unable to reach the agent network. Please ensure your API key is valid.",
+        content: "System Error: Unable to reach the agent network. Please check your connection or API key.",
         timestamp: new Date()
       };
       setMessages(prev => [...prev, errorMsg]);
@@ -134,13 +179,12 @@ const App: React.FC = () => {
     const reader = new FileReader();
     reader.onloadend = () => {
       const base64String = reader.result as string;
-      const mimeType = file.type;
       
-      // Send as a user message with attachment
       handleSendMessage("Here is the requested document.", {
         type: 'image',
         url: URL.createObjectURL(file),
-        base64: base64String
+        base64: base64String,
+        mimeType: file.type
       });
     };
     reader.readAsDataURL(file);
@@ -148,6 +192,13 @@ const App: React.FC = () => {
 
   const downloadSanctionLetter = () => {
     generateSanctionLetter(loanDetails);
+  };
+
+  // Construct status object for Panel
+  const currentAgentStatus: AgentStatus = {
+    type: activeAgent,
+    isActive: true,
+    statusMessage: agentStatusMsg
   };
 
   return (
@@ -162,7 +213,10 @@ const App: React.FC = () => {
              <div className="w-8 h-8 bg-emerald-600 rounded-lg flex items-center justify-center text-white font-bold">SL</div>
              <span className="font-bold text-slate-800">SwiftLoan AI</span>
            </div>
-           <span className="text-xs px-2 py-1 bg-slate-100 rounded-full text-slate-600">{activeAgent}</span>
+           <div className="flex flex-col items-end">
+             <span className="text-xs font-bold text-emerald-700">{activeAgent}</span>
+             <span className="text-[10px] text-slate-500">{agentStatusMsg}</span>
+           </div>
         </div>
 
         {/* Chat Messages */}
@@ -175,29 +229,51 @@ const App: React.FC = () => {
             {/* Loading Indicator */}
             {isLoading && (
               <div className="flex justify-start mb-4">
-                 <div className="bg-white border border-slate-200 px-4 py-3 rounded-2xl rounded-bl-none shadow-sm flex items-center gap-2 text-slate-500 text-sm">
-                    <Loader2 className="animate-spin" size={14} />
-                    <span>{activeAgent} is typing...</span>
+                 <div className="bg-white border border-slate-200 px-4 py-3 rounded-2xl rounded-bl-none shadow-sm flex items-center gap-3">
+                    <Loader2 className="animate-spin text-emerald-600" size={16} />
+                    <div className="flex flex-col">
+                      <span className="text-xs font-bold text-emerald-700">{activeAgent}</span>
+                      <span className="text-[10px] text-slate-500">{agentStatusMsg}...</span>
+                    </div>
                  </div>
               </div>
             )}
             
-            {/* Sanction Letter CTA */}
+            {/* Sanction Letter / Rejection CTA */}
             {loanDetails.status === 'approved' && !isLoading && (
-               <div className="flex justify-start mb-4">
-                  <div className="bg-emerald-50 border border-emerald-200 p-4 rounded-xl flex items-center gap-4 shadow-sm w-full md:w-auto">
-                    <div className="bg-emerald-100 p-3 rounded-full text-emerald-600">
+               <div className="flex justify-start mb-4 w-full">
+                  <div className="bg-emerald-50 border border-emerald-200 p-4 rounded-xl flex flex-col sm:flex-row items-center gap-4 shadow-sm w-full md:w-auto max-w-lg">
+                    <div className="bg-emerald-100 p-3 rounded-full text-emerald-600 flex-shrink-0">
                       <Download size={24} />
                     </div>
-                    <div>
+                    <div className="flex-1">
                       <h4 className="font-bold text-emerald-900">Loan Approved!</h4>
-                      <p className="text-sm text-emerald-700 mb-2">Your sanction letter is ready.</p>
+                      <p className="text-sm text-emerald-700 mb-2">
+                        {loanDetails.decisionEvidence ? `Based on: ${loanDetails.decisionEvidence}` : "Your sanction letter is ready."}
+                      </p>
                       <button 
                         onClick={downloadSanctionLetter}
-                        className="bg-emerald-600 hover:bg-emerald-700 text-white text-sm px-4 py-2 rounded-lg font-medium transition-colors"
+                        className="bg-emerald-600 hover:bg-emerald-700 text-white text-sm px-4 py-2 rounded-lg font-medium transition-colors w-full sm:w-auto"
                       >
-                        Download PDF
+                        Download Sanction Letter
                       </button>
+                    </div>
+                  </div>
+               </div>
+            )}
+
+            {loanDetails.status === 'rejected' && !isLoading && (
+               <div className="flex justify-start mb-4 w-full">
+                  <div className="bg-red-50 border border-red-200 p-4 rounded-xl flex items-center gap-4 shadow-sm w-full md:w-auto max-w-lg">
+                    <div className="bg-red-100 p-3 rounded-full text-red-600 flex-shrink-0">
+                      <AlertCircle size={24} />
+                    </div>
+                    <div>
+                      <h4 className="font-bold text-red-900">Application Declined</h4>
+                      <p className="text-sm text-red-700">{loanDetails.decisionReason}</p>
+                      {loanDetails.decisionEvidence && (
+                         <p className="text-xs text-red-600 mt-1 italic">"{loanDetails.decisionEvidence}"</p>
+                      )}
                     </div>
                   </div>
                </div>
@@ -245,7 +321,7 @@ const App: React.FC = () => {
 
             <button 
               onClick={() => handleSendMessage(inputValue)}
-              disabled={!inputValue.trim() || isLoading}
+              disabled={(!inputValue.trim() && !uploadRequest) || isLoading}
               className="p-3 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl transition-all shadow-md hover:shadow-lg"
             >
               <Send size={20} />
@@ -253,7 +329,7 @@ const App: React.FC = () => {
           </div>
           <div className="max-w-3xl mx-auto mt-2 text-center">
             <p className="text-[10px] text-slate-400">
-              SwiftLoan uses AI Agents. Mistakes may occur. Please verify critical info.
+              Agent: <span className="font-semibold text-emerald-600">{activeAgent}</span> | Status: {agentStatusMsg}
             </p>
           </div>
         </div>
@@ -261,7 +337,7 @@ const App: React.FC = () => {
 
       {/* Side Panel (Desktop Only) */}
       <div className="hidden md:block w-80 lg:w-96 h-full flex-shrink-0 shadow-xl z-10">
-        <StatusPanel activeAgent={activeAgent} loanDetails={loanDetails} />
+        <StatusPanel activeAgentStatus={currentAgentStatus} loanDetails={loanDetails} />
       </div>
 
     </div>

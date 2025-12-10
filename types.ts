@@ -15,6 +15,7 @@ export interface Message {
     type: 'image';
     url: string;
     base64: string;
+    mimeType: string;
   };
 }
 
@@ -28,6 +29,8 @@ export interface LoanDetails {
   sanctionDate?: string;
   interestRate?: number;
   tenureMonths?: number;
+  decisionReason?: string;
+  decisionEvidence?: string;
 }
 
 export interface AgentStatus {

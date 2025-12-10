@@ -42,7 +42,7 @@ export const generateSanctionLetter = (details: LoanDetails): void => {
   doc.text("APPROVED", margin, yPos);
   doc.setFont("helvetica", "normal");
   doc.setTextColor(0);
-  doc.text(" based on your credit profile and income verification.", margin + 28, yPos);
+  doc.text(" based on your credit profile.", margin + 28, yPos);
 
   yPos += 15;
   doc.setFontSize(14);
@@ -70,7 +70,17 @@ export const generateSanctionLetter = (details: LoanDetails): void => {
   yPos += 10;
   detailLine("Purpose:", `${details.purpose}`, yPos);
 
+  if (details.decisionEvidence) {
+    yPos += 20;
+    doc.setFontSize(10);
+    doc.setTextColor(100);
+    doc.text(`Basis of Approval: ${details.decisionEvidence}`, margin, yPos);
+    doc.setTextColor(0);
+    doc.setFontSize(11);
+  }
+
   yPos += 20;
+  doc.setFontSize(12);
   doc.text("Terms & Conditions:", margin, yPos);
   yPos += 8;
   doc.setFontSize(9);

@@ -18,24 +18,23 @@ const AgentBadge: React.FC<AgentBadgeProps> = ({ agent, isActive }) => {
   };
 
   const getColor = () => {
-    if (!isActive) return "bg-gray-100 text-gray-400 border-gray-200";
+    if (!isActive) return "bg-slate-50 text-slate-400 border-slate-100";
     switch (agent) {
-      case AgentType.SALES: return "bg-blue-100 text-blue-700 border-blue-300 ring-2 ring-blue-100";
-      case AgentType.KYC: return "bg-amber-100 text-amber-700 border-amber-300 ring-2 ring-amber-100";
-      case AgentType.UNDERWRITING: return "bg-purple-100 text-purple-700 border-purple-300 ring-2 ring-purple-100";
-      case AgentType.SANCTION: return "bg-emerald-100 text-emerald-700 border-emerald-300 ring-2 ring-emerald-100";
+      case AgentType.SALES: return "bg-blue-50 text-blue-700 border-blue-200";
+      case AgentType.KYC: return "bg-amber-50 text-amber-700 border-amber-200";
+      case AgentType.UNDERWRITING: return "bg-purple-50 text-purple-700 border-purple-200";
+      case AgentType.SANCTION: return "bg-emerald-50 text-emerald-700 border-emerald-200";
     }
   };
 
   return (
-    <div className={`flex items-center gap-2 px-3 py-2 rounded-full border transition-all duration-300 ${getColor()} ${isActive ? 'shadow-sm scale-105' : 'opacity-60 grayscale'}`}>
-      {getIcon()}
-      <span className="text-sm font-medium whitespace-nowrap">{agent}</span>
+    <div className={`flex items-center justify-between px-3 py-2 rounded-lg border transition-all duration-300 ${getColor()}`}>
+      <div className="flex items-center gap-3">
+        {getIcon()}
+        <span className="text-sm font-medium">{agent}</span>
+      </div>
       {isActive && (
-        <span className="flex h-2 w-2 relative">
-          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-current opacity-75"></span>
-          <span className="relative inline-flex rounded-full h-2 w-2 bg-current"></span>
-        </span>
+        <span className="h-2 w-2 rounded-full bg-current animate-pulse"></span>
       )}
     </div>
   );
