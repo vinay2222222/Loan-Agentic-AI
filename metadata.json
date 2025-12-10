@@ -1,0 +1,5 @@
+{
+  "name": "SwiftLoan Agentic AI",
+  "description": "An intelligent, agentic chatbot that handles personal loan applications from conversation to sanction letter generation using Gemini 2.5.",
+  "requestFramePermissions": []
+}
